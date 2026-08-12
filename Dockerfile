@@ -6,12 +6,17 @@ LABEL org.opencontainers.image.title="gpsd to gpslogger endpoint gateway" \
       org.opencontainers.image.source="https://github.com/Stormwind99/gpsd-to-gpslogger-endpoint" \
       org.opencontainers.image.licenses="GPL-3.0-only"
 
-WORKDIR /app
-
 # Install py3-gpsd and py3-requests
-RUN apk add --no-cache py3-gpsd py3-requests
+RUN apk add --no-cache python3 py3-gpsd py3-requests
 
+# Create a system group and user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app 
 COPY . /app
+RUN chown -R appuser:appgroup /app
+
+USER appuser
 
 # Exec form ensures signals (SIGTERM) pass directly to Python
 ENTRYPOINT ["python3", "-u", "gpsd-to-gpslogger-endpoint.py"]
