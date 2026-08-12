@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.title="gpsd to gpslogger endpoint gateway" \
 
 WORKDIR /app
 
-# Install py3-gps and py3-requests
+# Install py3-gpsd and py3-requests
 RUN apk add --no-cache py3-gpsd py3-requests
 
 COPY . /app
