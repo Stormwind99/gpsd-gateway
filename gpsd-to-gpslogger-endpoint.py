@@ -11,6 +11,7 @@ Threading model:
 * writer threads (default 1) wait for payloads to the send in the sending queue, and sends any payload to the gpslogger endpoint immediately (and retries any failures)
 """
 
+
 import configargparse
 import gps
 import requests
@@ -22,6 +23,15 @@ import logging
 import queue
 import threading
 from datetime import datetime
+
+
+#########################################################################
+# Misc
+#########################################################################
+
+# create a namespaced logger for the module
+# so if module is reused, the future user can configure logging for just this module
+logger = logging.getLogger(__name__)
 
 #########################################################################
 # Signal processing
@@ -37,7 +47,7 @@ def handle_sigterm(signum, frame) -> GracefulExit:
 
 def handle_sighup(signum, frame) -> None:
     """Handle SIGHUP: do nothing"""
-    logging.info("SIGHUP received - nothing to do")
+    logger.info("SIGHUP received - nothing to do")
 
 #########################################################################
 # GpsdGateway
@@ -60,11 +70,11 @@ class GpsdGateway:
     # Data processing
     #########################################################################
 
-    def processData(session) -> dict:
+    def processData(session) -> dict[str, str]:
         """
         Given a gpsd session object, process it and return an equivalent gpslogger-endpoint-compatible payload
         """
-        logString = 'Mode: %s(%d)' % (("Invalid", "NO_FIX", "2D", "3D")[session.fix.mode], session.fix.mode)
+        logString = 'GPSd sent Mode: %s(%d)' % (("Invalid", "NO_FIX", "2D", "3D")[session.fix.mode], session.fix.mode)
 
         # battery level may be optional:
         # https://github.com/mendhak/gpslogger/blob/master/gpslogger/src/main/java/com/mendhak/gpslogger/common/SerializableLocation.java#L86
@@ -104,8 +114,6 @@ class GpsdGateway:
             payload['lat'] = session.fix.latitude
             payload['lon'] = session.fix.longitude
             logString += " Lat %.6f Lon %.6f" % (session.fix.latitude, session.fix.longitude)
-        else:
-            logString += " Lat n/a Lon n/a"
 
         # Get timestamp of gpsd data
         if gps.TIME_SET & session.valid:
@@ -114,59 +122,63 @@ class GpsdGateway:
             payload['tst'] = timeStamp
                 
             logString += ' Time: %s (%d)' % (session.fix.time, timeStamp)
-        else:
-            logString += ' Time: n/a'
    
         # Get speed
         if gps.isfinite(session.fix.speed):
             payload['vel'] = session.fix.speed # maybe * 3.6, # Convert m/s to km/h
       
         logString  += ' END'
-        logging.debug(logString)
+        logger.debug(logString)
 
         return payload
 
 
-    def isDataComplete(payload) -> bool:
+    def isDataComplete(payload: dict[str, str]) -> bool:
         """
         Does the payload have all data required of gpslogger endpoint?
 
         Arguments:
-            payload (dict): the potential gpslogger payload
+            payload (dict[str, str]): the potential gpslogger payload
         """
         required_keys = {"_type", "t", "batt", "bs", "tst", "lat", "lon", "vel", "acc", "alt"}
         return payload.keys() >= required_keys
 
 
-    def checkData(self, payload) -> bool:
+    def checkData(self, payload: dict[str, str]) -> bool:
         """
         Does the payload meet all requirements for being enqueued for sampling then sending?
 
         Arguments:
-            payload (dict): the potential gpslogger payload
+            payload (dict[str, str]): the potential gpslogger payload
         """
         if GpsdGateway.isDataComplete(payload) == False:
             return False
         if (self._lastTimestamp == int(payload['tst'])):
-            logging.debug(f"Skipping payload with repeat timestamp {self._lastTimestamp}")
+            logger.debug(f"Skipped enqueing payload with repeat timestamp {self._lastTimestamp}")
             return False
         return True
 
 
-    def enqueueData(self, payload) -> None:
+    def enqueueData(self, payload: dict[str, str]) -> None:
         """
         Enqueue a received gpsd payload for potential sampling and sending
 
         Arguments:
-            payload (dict): the gpslogger payload
+            payload (dict[str, str]): the gpslogger payload
         """
-        logging.debug(f"Enqueing payload {payload}")
+        logger.debug(f"Enqued payload {payload}")
         self._samplingQueue.put(payload)
 
 
-    def sendData(self, id: int, url: string, headers, payload) -> bool:
+    def sendData(self, id: int, url: string, headers: dict[str, str], payload:dict[str, str]) -> bool:
         """
         Send a gpslogger payload to the specified url with http headers
+
+        Arguments:
+            id (int): thread id number
+            url (string): URL of gpslogger endpoint to send data to
+            headers (dict[str, str]): http headers to use in gpslogger http post
+            payload (dict[str, str]): gpslogger format payload of TPV data
         """
         success = False
         try:
@@ -174,13 +186,13 @@ class GpsdGateway:
             response = requests.post(url, json=payload, headers=headers, timeout=5)
             if response.status_code == 200:
                 success = True
-                logging.debug(f"Writer {id} sent to endpoint: {payload['lat']}, {payload['lon']}")
+                logger.debug(f"Writer {id} Sent to endpoint: {payload['lat']}, {payload['lon']}")
             elif response.status_code in (401, 403):
-                logging.error(f"Writer {id} Authentication failed! Check your X-API-TOKEN. Status code: {response.status_code}")
+                logger.error(f"Writer {id} Authentication failed! Check your X-API-TOKEN. Status code: {response.status_code}")
             else:
-                logging.error(f"Writer {id} Endpoint rejected data. Status code: {response.status_code}")
+                logger.error(f"Writer {id} Endpoint rejected data. Status code: {response.status_code}")
         except requests.exceptions.RequestException as req_err:
-            logging.error(f"Writer {id} Network error forwarding to endpoint: {req_err}")
+            logger.error(f"Writer {id} Network error forwarding to endpoint: {req_err}")
 
         return success
 
@@ -188,21 +200,21 @@ class GpsdGateway:
     # Thread entry methods
     #########################################################################
 
-    def reader(self, id: int, stop_event, host: string, port: int) -> None:
+    def reader(self, id: int, stop_event: threading.Event, host: string, port: int) -> None:
         """
         Thread of id to continuously read data from gpsd on host:port and enqueue any valid payloads for sampling
 
         stop_event will signal thread to stop and return
         """
-        logging.debug(f"Reader {id} starting for {host}:{port}")
+        logger.debug(f"Reader {id} starting for {host}:{port}")
 
         while not stop_event.is_set():
             session = None
 
             try:
-                logging.info(f"Connecting to gpsd at tcp://{host}:{port}")
+                logger.info(f"Connecting to gpsd at tcp://{host}:{port}")
                 session = gps.gps(host=host, port=port, mode=gps.WATCH_ENABLE) # TODO mode=gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE
-                logging.info(f"Connected to gpsd at: tcp://{host}:{port}")
+                logger.info(f"Connected to gpsd at: tcp://{host}:{port}")
 
                 while (not stop_event.is_set()) and (0 == session.read()):
                     if not (gps.MODE_SET & session.valid):
@@ -216,23 +228,23 @@ class GpsdGateway:
 
             # These exceptions just cause a reconnection attempt
             except ConnectionRefusedError as e:
-                logging.error(f"Could not connect to gpsd at {host}:{port}: {e}")
+                logger.error(f"Could not connect to gpsd at {host}:{port}: {e}")
                 stop_event.wait(timeout=1) 
             except Exception as e:
-                logging.error(f"Unknown error: {e}")
+                logger.error(f"Unknown error: {e}")
                 stop_event.wait(timeout=1) 
 
         if session is not None: session.close()
-        logging.debug(f"Reader {id} ending for {host}:{port}")
+        logger.debug(f"Reader {id} ending for {host}:{port}")
 
 
-    def sampler(self, id: int, stop_event, interval: int) -> None:
+    def sampler(self, id: int, stop_event: threading.Event, interval: int) -> None:
         """
         Thread of id to perioidically at interval seconds to sample 1 payload from the samplingQueue and enqueue it on sendingQueue for sending to gpslogger endpoint
 
         stop_event will signal thread to stop and return
         """
-        logging.debug(f"Sampler {id} starting")
+        logger.debug(f"Sampler {id} starting")
 
         latest = None
 
@@ -247,28 +259,27 @@ class GpsdGateway:
 
             # if the queue is empty, then block for first entry to avoid adding latency (and either just started or already waited min time between sends)
             if latest == None:
-                logging.debug(f"Sampler {id} Queue empty so do blocking get (count {count})")
+                logger.debug(f"Sampler {id} Queue empty so do blocking get (count {count})")
                 latest = self._samplingQueue.get(block=True)
                 if latest is not None: count += 1
 
             if latest is not None:
-                logging.debug(f"Sampler {id} Sampled 1 of {count} queued to send")
+                logger.debug(f"Sampler {id} Sampled 1 of {count} and queued to send, and sleeping for {interval}")
                 self._sendQueue.put(latest)
-                logging.debug(f"Sampler {id} Sleeping {interval}")
                 stop_event.wait(timeout=interval) 
             else:
-                logging.debug(f"Sampler {id} Queue empty after blocking get (count {count})")
+                logger.debug(f"Sampler {id} Queue empty after blocking get (count {count})")
 
-        logging.debug(f"Sampler {id} ending")
+        logger.debug(f"Sampler {id} ending")
 
 
-    def writer(self, id: int, stop_event, url: string, headers) -> None:
+    def writer(self, id: int, stop_event: threading.Event, url: string, headers: dict[str, str]) -> None:
         """
         Thread of id to continuously read payloads from sendingQueue and send payload to gpslogger endpoint at url with http headers
 
         stop_event will signal thread to stop and return
         """
-        logging.debug(f"Writer {id} starting")
+        logger.debug(f"Writer {id} starting")
 
         latest = None
 
@@ -281,16 +292,18 @@ class GpsdGateway:
             if latest is not None:
                 int_timestamp = int(time.time())
                 queueSize = self._sendQueue.qsize()
-                logging.debug(f"Writer {id} Sending payload (of {queueSize} @ {int_timestamp}): {latest})")
+                logger.debug(f"Writer {id} Sending payload (of {queueSize} @ {int_timestamp}): {latest})")
                 if not self.sendData(id, url, headers, latest):
-                    logging.error(f"Writer {id} Failed sending payload, re-enqueing @ {int_timestamp}: {latest})")
-                    # MAYBE pause for a bit?
+                    logger.error(f"Writer {id} Failed sending payload, re-enqueing @ {int_timestamp}: {latest})")
+                    # pause for a bit?
                     stop_event.wait(timeout=1) 
                     # if sending fails, toss it back on queue for later attempt?
+                    # TODO: stop queue from eating all memory if endpoint down for a long time
                     self._sendQueue.put(latest)
         
-        logging.debug(f"Writer {id} ending")
-                
+        logger.debug(f"Writer {id} ending")
+
+
     #########################################################################
     # Main loop
     #########################################################################
@@ -301,8 +314,8 @@ class GpsdGateway:
 
         Runs until unrecoverable error, KeyboardInterrupt, or kill signal
         """
-        logging.info(f"Starting gpsd-to-gpslogger endpoint gateway...")
-        logging.info(f"Targeting gpslogger endpoint URL: {url}")
+        logger.info(f"Starting gpsd-to-gpslogger endpoint gateway...")
+        logger.info(f"Targeting gpslogger endpoint URL: {url}")
 
         # Set up the authorization header
         headers = {
@@ -310,8 +323,10 @@ class GpsdGateway:
             'X-API-TOKEN': token
         }
      
-        # stop signal event to threads, to make KeyboardInterrupt work
+        # stop signal event to threads, to make KeyboardInterrupt and graceful SIGKILL work
         stop_event = threading.Event()
+
+        # all threads being created and run
         threads = []
 
         try:
@@ -342,20 +357,21 @@ class GpsdGateway:
 
         # These exceptions shut down the gateway
         except KeyboardInterrupt as e:
-            logging.info(f"Shutting down gateway due to Control-C {e}")
+            logger.info(f"Shutting down due to Control-C {e}")
         except GracefulExit as e:
-            logging.info(f"Shutting down gateway due to kill signal: {e}")
+            logger.info(f"Shutting down due to kill signal: {e}")
         except Exception as e:
-            logging.error(f"Unknown error: {e}")
+            logger.error(f"Unknown error: {e}")
         finally:
-           logging.info(f"Signaling threads to stop and waiting...")
+           logger.info(f"Signaling threads to stop and waiting...")
            # Signal all threads to drop out of their loops
            stop_event.set()
 
            # wait for all threads to join
            for t in threads: t.join()
 
-           logging.info(f"Done")
+           logger.info(f"Done")
+
 
 #########################################################################
 # Argument parsing
@@ -375,6 +391,7 @@ def parse_arguments() -> configargparse.Namespace:
     parser.add_argument('-w', '--numwriters', type=int, default=1, help="Number of writer threads to send to payloads to endpoint (default: 1)")
     parser.add_argument('-l', '--loglevel', default='WARNING', type=str.upper, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level (default: WARNING)')
     return parser.parse_args()
+
 
 #########################################################################
 # Main
