@@ -13,14 +13,9 @@ Related programs:
 * Reitti - https://github.com/dedicatedcode/reitti or https://www.dedicatedcode.com/projects/reitti/latest/
     * Reitti is a comprehensive personal location tracking and analysis application that helps you understand your movement patterns and significant places. The name "Reitti" comes from Finnish, meaning "route" or "path".
 
-Threading model:
-* main thread starts all other threads up, handles shutdown signal processing and on demand tells threads to stop, waits for threads to complete, then returns
-* reader thread connects to gpsd, reads all sentences from gpsd as fast as it sends them (one per second, otherwise it will fall behind), and enqueues all unique TPV (time position velocity) messages onto the sampling queue as a gpslogger payload
-* sampler thread reads the latest payload from the sampling queue at a configured interval to reduce the data rate (defaults to once per 15 seconds, so about 1 out of 15 updates) while emptying the sampling queue, and puts it into the send queue
-* writer threads (default 1) wait for payloads to the send in the sending queue, and sends any payload to the gpslogger endpoint immediately (and retries any failures)
-
 Possible improvements:
 * Track stats, with configurable periodic logging
+* Support config file or another way of getting API token off command line
 * Optional "Significant change" support, only updating if position or velocity changes significantly (or perhaps a scalable update rate)
 * Make the gpslogger payload configurable, perhaps borrowing the same customizable format gpslogger uses
 * Send batches of downsampled data (example: one batch of 60 TPV messages, each point 15 seconds apart) for greater mapping/tracking service efficiency
