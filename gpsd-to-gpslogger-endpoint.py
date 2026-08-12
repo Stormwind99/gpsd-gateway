@@ -22,6 +22,7 @@ import time
 import logging
 import queue
 import threading
+import math
 from datetime import datetime
 
 
@@ -32,6 +33,7 @@ from datetime import datetime
 # create a namespaced logger for the module
 # so if module is reused, the future user can configure logging for just this module
 logger = logging.getLogger(__name__)
+
 
 #########################################################################
 # Signal processing
@@ -48,6 +50,7 @@ def handle_sigterm(signum, frame) -> GracefulExit:
 def handle_sighup(signum, frame) -> None:
     """Handle SIGHUP: do nothing"""
     logger.info("SIGHUP received - nothing to do")
+
 
 #########################################################################
 # GpsdGateway
@@ -70,9 +73,15 @@ class GpsdGateway:
     # Data processing
     #########################################################################
 
-    def processData(session) -> dict[str, str]:
+    def processData(session: gps.gps.gps) -> dict[str, str | int | float]:
         """
         Given a gpsd session object, process it and return an equivalent gpslogger-endpoint-compatible payload
+
+        Arguments:
+            session (gps.gps.gps): gpsd library session
+
+        Returns:
+            dict[str, str | int | float]: gpslogger format payload
         """
         logString = 'GPSd sent Mode: %s(%d)' % (("Invalid", "NO_FIX", "2D", "3D")[session.fix.mode], session.fix.mode)
 
@@ -93,21 +102,18 @@ class GpsdGateway:
         if (gps.isfinite(session.fix.epx) and gps.isfinite(session.fix.epy)):
             lat_err = session.fix.epy  # Latitude error in meters
             lon_err = session.fix.epx  # Longitude error in meters
-    
             # Combine lat ang lon error to get total horizontal error margin
-            horizontal_accuracy = (lat_err**2 + lon_err**2)**0.5
-            logString += f" Acc: {horizontal_accuracy:.2f}m LatE {lat_err:.2f}m LonE {lon_err:.2f}m"
-
+            horizontal_accuracy = math.hypot(lat_err, lon_err)
             if horizontal_accuracy is not None: payload['acc'] = horizontal_accuracy
+            logString += f" Acc: {horizontal_accuracy:.2f}m LatE {lat_err:.2f}m LonE {lon_err:.2f}m"
 
         # Get altitude
         # gpslogger expects HAE by default unless MSL turned ON which can result in missing alt
         # See https://github.com/mendhak/gpslogger/issues/748
         if gps.isfinite(session.fix.altHAE):
             alt = session.fix.altHAE
-            logString += f" alt: {alt}m"
-
             if alt is not None: payload['alt'] = alt
+            logString += f" alt: {alt}m"
      
         # Get lat and lon
         if ((gps.isfinite(session.fix.latitude) and gps.isfinite(session.fix.longitude))):
@@ -118,9 +124,7 @@ class GpsdGateway:
         # Get timestamp of gpsd data
         if gps.TIME_SET & session.valid:
             timeStamp = gps.isotime(session.fix.time)
-
-            payload['tst'] = timeStamp
-                
+            payload['tst'] = int(timeStamp)
             logString += ' Time: %s (%d)' % (session.fix.time, timeStamp)
    
         # Get speed
@@ -133,44 +137,51 @@ class GpsdGateway:
         return payload
 
 
-    def isDataComplete(payload: dict[str, str]) -> bool:
+    def isDataComplete(payload: dict[str, str | int | float]) -> bool:
         """
         Does the payload have all data required of gpslogger endpoint?
 
         Arguments:
-            payload (dict[str, str]): the potential gpslogger payload
+            payload (dict[str, str | int | float]): the potential gpslogger payload
+
+        Returns:
+            bool: if payload is complete enough to be accepted by gpslogger endpoint
         """
         required_keys = {"_type", "t", "batt", "bs", "tst", "lat", "lon", "vel", "acc", "alt"}
         return payload.keys() >= required_keys
 
 
-    def checkData(self, payload: dict[str, str]) -> bool:
+    def checkData(self, payload: dict[str, str | int | float]) -> bool:
         """
         Does the payload meet all requirements for being enqueued for sampling then sending?
 
         Arguments:
-            payload (dict[str, str]): the potential gpslogger payload
+            payload (dict[str, str | int | float]): the potential gpslogger payload
+
+        Returns:
+            bool: should payload be queued for sending to gpslogger endpoint
         """
         if GpsdGateway.isDataComplete(payload) == False:
             return False
+
         if (self._lastTimestamp == int(payload['tst'])):
             logger.debug(f"Skipped enqueing payload with repeat timestamp {self._lastTimestamp}")
             return False
         return True
 
 
-    def enqueueData(self, payload: dict[str, str]) -> None:
+    def enqueueData(self, payload: dict[str, str | int | float]) -> None:
         """
         Enqueue a received gpsd payload for potential sampling and sending
 
         Arguments:
-            payload (dict[str, str]): the gpslogger payload
+            payload (dict[str, str | int | float]): the gpslogger payload
         """
         logger.debug(f"Enqued payload {payload}")
         self._samplingQueue.put(payload)
 
 
-    def sendData(self, id: int, url: string, headers: dict[str, str], payload:dict[str, str]) -> bool:
+    def sendData(self, id: int, url: string, headers: dict[str, str], payload:dict[str, str | int | float]) -> bool:
         """
         Send a gpslogger payload to the specified url with http headers
 
@@ -178,7 +189,10 @@ class GpsdGateway:
             id (int): thread id number
             url (string): URL of gpslogger endpoint to send data to
             headers (dict[str, str]): http headers to use in gpslogger http post
-            payload (dict[str, str]): gpslogger format payload of TPV data
+            payload (dict[str, str | int | float]): gpslogger format payload of TPV data
+
+        Returns:
+            bool: was payload sent to gpslogger endpoint
         """
         success = False
         try:
@@ -200,27 +214,31 @@ class GpsdGateway:
     # Thread entry methods
     #########################################################################
 
-    def reader(self, id: int, stop_event: threading.Event, host: string, port: int) -> None:
+    def reader(self, id: int, stop_event: threading.Event, server: string, port: int) -> None:
         """
-        Thread of id to continuously read data from gpsd on host:port and enqueue any valid payloads for sampling
+        Thread of id to continuously read data from gpsd on server:port and enqueue any valid payloads for sampling
 
-        stop_event will signal thread to stop and return
+        Arguments:
+            id (int): thread id number
+            stop_event (threading.Event): use to signal thread to stop and return
+            server (string): hostname of gpsd server
+            port (int): TCP port of gpsd server
         """
-        logger.debug(f"Reader {id} starting for {host}:{port}")
+        logger.debug(f"Reader {id} starting for {server}:{port}")
 
         while not stop_event.is_set():
             session = None
 
             try:
-                logger.info(f"Connecting to gpsd at tcp://{host}:{port}")
-                session = gps.gps(host=host, port=port, mode=gps.WATCH_ENABLE) # TODO mode=gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE
-                logger.info(f"Connected to gpsd at: tcp://{host}:{port}")
+                logger.info(f"Connecting to gpsd at tcp://{server}:{port}")
+                session = gps.gps(host=server, port=port, mode=gps.WATCH_ENABLE) # TODO mode=gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE
+                logger.info(f"Connected to gpsd at: tcp://{server}:{port}")
 
                 while (not stop_event.is_set()) and (0 == session.read()):
                     if not (gps.MODE_SET & session.valid):
-                    # not useful, probably not a TPV message
+                        # not useful, probably not a TPV message
                         continue
-    
+   
                     payload = GpsdGateway.processData(session)
                     if self.checkData(payload):
                         self._lastTimestamp = int(payload['tst'])
@@ -228,21 +246,24 @@ class GpsdGateway:
 
             # These exceptions just cause a reconnection attempt
             except ConnectionRefusedError as e:
-                logger.error(f"Could not connect to gpsd at {host}:{port}: {e}")
+                logger.error(f"Could not connect to gpsd at {server}:{port}: {e}")
                 stop_event.wait(timeout=1) 
             except Exception as e:
                 logger.error(f"Unknown error: {e}")
                 stop_event.wait(timeout=1) 
 
         if session is not None: session.close()
-        logger.debug(f"Reader {id} ending for {host}:{port}")
+        logger.debug(f"Reader {id} ending for {server}:{port}")
 
 
     def sampler(self, id: int, stop_event: threading.Event, interval: int) -> None:
         """
         Thread of id to perioidically at interval seconds to sample 1 payload from the samplingQueue and enqueue it on sendingQueue for sending to gpslogger endpoint
 
-        stop_event will signal thread to stop and return
+        Arguments:
+            id (int): thread id number
+            stop_event (threading.Event): use to signal thread to stop and return
+            interval (int): seconds between sampling 1 payload from the samplingQueue
         """
         logger.debug(f"Sampler {id} starting")
 
@@ -277,7 +298,11 @@ class GpsdGateway:
         """
         Thread of id to continuously read payloads from sendingQueue and send payload to gpslogger endpoint at url with http headers
 
-        stop_event will signal thread to stop and return
+        Arguments:
+            id (int): thread id number
+            stop_event (threading.Event): use to signal thread to stop and return
+            url (string): gpslogger endpoint URL to http POST payload
+            headers (dict[str, str]): http headers to apply to POST
         """
         logger.debug(f"Writer {id} starting")
 
@@ -313,6 +338,14 @@ class GpsdGateway:
         Run the gpsd-to-gpslogger-endpoint gateway
 
         Runs until unrecoverable error, KeyboardInterrupt, or kill signal
+
+        Arguments:
+            server (string): hostname of gpsd server
+            port (int): TCP port of gpsd server
+            url (string): gpslogger endpoint URL to http POST payload
+            token (string): X-API-TOKEN for auth when POSTing to gpslogger endpoint URL
+            interval (int): seconds between sampling 1 payload from the samplingQueue
+            numwriters (int): number of writer threads to gpslogger endpoing to start
         """
         logger.info(f"Starting gpsd-to-gpslogger endpoint gateway...")
         logger.info(f"Targeting gpslogger endpoint URL: {url}")
@@ -378,7 +411,13 @@ class GpsdGateway:
 #########################################################################
 
 def parse_arguments() -> configargparse.Namespace:
-    """Parse arguments"""
+    """
+    Parse arguments
+
+    Returns:
+        configargparse.Namespace: parsed configuration
+    """
+
     parser = configargparse.ArgumentParser(
         description="Configurable gateway to forward gpsd data to a GPSLogger-compatible endpoint"
     )
