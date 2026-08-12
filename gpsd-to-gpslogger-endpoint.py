@@ -11,7 +11,7 @@ Threading model:
 * writer threads (default 1) wait for payloads to the send in the sending queue, and sends any payload to the gpslogger endpoint immediately (and retries any failures)
 """
 
-import argparse
+import configargparse
 import gps
 import requests
 import time
@@ -361,50 +361,19 @@ class GpsdGateway:
 # Argument parsing
 #########################################################################
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments() -> configargparse.Namespace:
     """Parse arguments"""
-    parser = argparse.ArgumentParser(
+    parser = configargparse.ArgumentParser(
         description="Configurable gateway to forward gpsd data to a GPSLogger-compatible endpoint"
     )
-    parser.add_argument(
-        '-s', '--server',
-        default="localhost",
-        help="The hostname or IP address of the gpsd daemon (default: localhost)."
-    )
-    parser.add_argument(
-        '-p', '--port',
-        default="2947",
-        help="The port number of the gpsd daemon (default: 2947)."
-    )
-    parser.add_argument(
-        '-u', '--url',
-        required=True,
-        help="The GPSLogger endpoint URL (e.g., https://example.com)."
-    )
-    parser.add_argument(
-        '-t', '--token',
-        required=True,
-        help="The GPSLogger authorization token passed in the X-API-TOKEN header."
-    )
-    parser.add_argument(
-        '-i', '--interval',
-        type=int,
-        default=15,
-        help="Interval time in seconds between endpoint updates (default: 15)."
-    )
-    parser.add_argument(
-        '-w', '--numwriters',
-        type=int,
-        default=1,
-        help="Number of writer threads to send to payloads to endpoint (default: 1)"
-    )
-    parser.add_argument(
-        '-l', '--log',
-        default='WARNING',
-        type=str.upper,  # Automatically converts input to uppercase
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        help='Set the logging level (default: WARNING)'
-    )
+    parser.add_argument('-c', '--config', is_config_file=True, help='Path to config file')
+    parser.add_argument('-s', '--server', default="localhost", help="hostname or IP address of the gpsd daemon (default: localhost).")
+    parser.add_argument('-p', '--port', default="2947", help="port number of the gpsd daemon (default: 2947).")
+    parser.add_argument('-u', '--url', required=True, help="GPSLogger endpoint URL (e.g., https://example.com).")
+    parser.add_argument('-t', '--token', required=True, help="GPSLogger authorization token passed in the X-API-TOKEN header.")
+    parser.add_argument('-i', '--interval', type=int, default=15, help="Interval time in seconds between endpoint updates (default: 15).")
+    parser.add_argument('-w', '--numwriters', type=int, default=1, help="Number of writer threads to send to payloads to endpoint (default: 1)")
+    parser.add_argument('-l', '--loglevel', default='WARNING', type=str.upper, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level (default: WARNING)')
     return parser.parse_args()
 
 #########################################################################
@@ -420,7 +389,7 @@ def main():
 
     # Configure the logger
     logging.basicConfig(
-        level=args.log,
+        level=args.loglevel,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
