@@ -34,7 +34,6 @@ from datetime import datetime
 # so if module is reused, the future user can configure logging for just this module
 logger = logging.getLogger(__name__)
 
-
 #########################################################################
 # Signal processing
 #########################################################################
@@ -61,6 +60,11 @@ class GpsdGateway:
     Gateway to read GPS data from gpsd and forward it to gpslogger style endpoint
     """
 
+    # type hint shortcuts
+    type HeaderDict = dict[str, str]
+    type PayloadValue = str | int | float
+    type PayloadDict = dict[str, PayloadValue]
+
     def __init__(self):
         self._lastTimestamp: int = 0
         """int: Unix timestamp of last data from gpsd session that was enqueued for sampling and potential sending"""
@@ -73,7 +77,7 @@ class GpsdGateway:
     # Data processing
     #########################################################################
 
-    def processData(session: gps.gps.gps) -> dict[str, str | int | float]:
+    def processData(session: gps.gps.gps) -> PayloadDict:
         """
         Given a gpsd session object, process it and return an equivalent gpslogger-endpoint-compatible payload
 
@@ -81,7 +85,7 @@ class GpsdGateway:
             session (gps.gps.gps): gpsd library session
 
         Returns:
-            dict[str, str | int | float]: gpslogger format payload
+            PayloadDict: gpslogger format payload
         """
         logString = 'GPSd sent Mode: %s(%d)' % (("Invalid", "NO_FIX", "2D", "3D")[session.fix.mode], session.fix.mode)
 
@@ -137,12 +141,12 @@ class GpsdGateway:
         return payload
 
 
-    def isDataComplete(payload: dict[str, str | int | float]) -> bool:
+    def isDataComplete(payload: PayloadDict) -> bool:
         """
         Does the payload have all data required of gpslogger endpoint?
 
         Arguments:
-            payload (dict[str, str | int | float]): the potential gpslogger payload
+            payload (PayloadDict): the potential gpslogger payload
 
         Returns:
             bool: if payload is complete enough to be accepted by gpslogger endpoint
@@ -151,12 +155,12 @@ class GpsdGateway:
         return payload.keys() >= required_keys
 
 
-    def checkData(self, payload: dict[str, str | int | float]) -> bool:
+    def checkData(self, payload: PayloadDict) -> bool:
         """
         Does the payload meet all requirements for being enqueued for sampling then sending?
 
         Arguments:
-            payload (dict[str, str | int | float]): the potential gpslogger payload
+            payload (PayloadDict): the potential gpslogger payload
 
         Returns:
             bool: should payload be queued for sending to gpslogger endpoint
@@ -170,26 +174,26 @@ class GpsdGateway:
         return True
 
 
-    def enqueueData(self, payload: dict[str, str | int | float]) -> None:
+    def enqueueData(self, payload: PayloadDict) -> None:
         """
         Enqueue a received gpsd payload for potential sampling and sending
 
         Arguments:
-            payload (dict[str, str | int | float]): the gpslogger payload
+            payload (PayloadDict): the gpslogger payload
         """
         logger.debug(f"Enqued payload {payload}")
         self._samplingQueue.put(payload)
 
 
-    def sendData(self, id: int, url: string, headers: dict[str, str], payload:dict[str, str | int | float]) -> bool:
+    def sendData(self, id: int, url: string, headers: HeaderDict, payload: PayloadDict) -> bool:
         """
         Send a gpslogger payload to the specified url with http headers
 
         Arguments:
             id (int): thread id number
             url (string): URL of gpslogger endpoint to send data to
-            headers (dict[str, str]): http headers to use in gpslogger http post
-            payload (dict[str, str | int | float]): gpslogger format payload of TPV data
+            headers (HeaderDict): http headers to use in gpslogger http post
+            payload (PayloadDict): gpslogger format payload of TPV data
 
         Returns:
             bool: was payload sent to gpslogger endpoint
@@ -294,7 +298,7 @@ class GpsdGateway:
         logger.debug(f"Sampler {id} ending")
 
 
-    def writer(self, id: int, stop_event: threading.Event, url: string, headers: dict[str, str]) -> None:
+    def writer(self, id: int, stop_event: threading.Event, url: string, headers: HeaderDict) -> None:
         """
         Thread of id to continuously read payloads from sendingQueue and send payload to gpslogger endpoint at url with http headers
 
@@ -302,7 +306,7 @@ class GpsdGateway:
             id (int): thread id number
             stop_event (threading.Event): use to signal thread to stop and return
             url (string): gpslogger endpoint URL to http POST payload
-            headers (dict[str, str]): http headers to apply to POST
+            headers (HeaderDict): http headers to apply to POST
         """
         logger.debug(f"Writer {id} starting")
 
