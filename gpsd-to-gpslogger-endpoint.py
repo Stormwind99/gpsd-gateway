@@ -166,6 +166,10 @@ class GpsdGateway:
         if (interval != 0):
             self._stats.report()
 
+    def handleSighup(self, signum, frame) -> None:
+        logger.info("SIGHUP received - forcing stats report")
+        self._stats.report()
+
 
     #########################################################################
     # Data processing
@@ -565,7 +569,7 @@ def parse_arguments() -> configargparse.Namespace:
     parser.add_argument('-i', '--interval', type=int, default=15, help="Interval time in seconds between endpoint updates, 0 sends every payload (default: 15).")
     parser.add_argument('-w', '--numwriters', type=int, default=1, help="Number of writer threads to send to payloads to endpoint (default: 1)")
     parser.add_argument('-l', '--loglevel', default='WARNING', type=str.upper, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level (default: WARNING)')
-    parser.add_argument('-r', '--statsinterval', type=int, default=0, help="Interval time in seconds between stats reports to INFO log, 0 disables (default: 0).")
+    parser.add_argument('-r', '--statsinterval', type=int, default=0, help="Interval time in seconds between stats reports to INFO log, 0 disables, SIGHUP forces report (default: 0).")
     return parser.parse_args()
 
 
@@ -574,7 +578,7 @@ def parse_arguments() -> configargparse.Namespace:
 #########################################################################
 
 def main():
-    # Register the handler for the SIGTERM kill signal
+    # Register signal handlers
     signal.signal(signal.SIGTERM, handle_sigterm)
     signal.signal(signal.SIGHUP, handle_sighup)
 
@@ -587,6 +591,8 @@ def main():
     )
 
     app = GpsdGateway()
+    # switch SIGHUP to be handled by GpsdGateway object for forced stats reporting
+    signal.signal(signal.SIGHUP, app.handleSighup)
     app.run(
         server=args.server,
         port=args.port,
