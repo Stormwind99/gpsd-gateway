@@ -6,6 +6,7 @@ Configurable gateway to send gpsd TPV (Time Position Velocity) data to a GPSLogg
 
 Threading model:
 * main thread starts all other threads up, handles shutdown signal processing and on demand tells threads to stop, waits for threads to complete, then returns
+* stats thread that receives stats from all threads and periodically logs those stats if enabled
 * reader thread connects to gpsd, reads all sentences from gpsd as fast as it sends them (one per second, otherwise it will fall behind), and enqueues all unique TPV (time position velocity) messages onto the sampling queue as a gpslogger payload
 * sampler thread reads the latest payload from the sampling queue at a configured interval to reduce the data rate (defaults to once per 15 seconds, so about 1 out of 15 updates) while emptying the sampling queue, and puts it into the send queue
 * writer threads (default 1) wait for payloads to the send in the sending queue, and sends any payload to the gpslogger endpoint immediately (and retries any failures)
@@ -23,6 +24,7 @@ import logging
 import queue
 import threading
 import math
+import json
 from datetime import datetime
 
 
@@ -33,6 +35,7 @@ from datetime import datetime
 # create a namespaced logger for the module
 # so if module is reused, the future user can configure logging for just this module
 logger = logging.getLogger(__name__)
+
 
 #########################################################################
 # Signal processing
@@ -49,6 +52,84 @@ def handle_sigterm(signum, frame) -> GracefulExit:
 def handle_sighup(signum, frame) -> None:
     """Handle SIGHUP: do nothing"""
     logger.info("SIGHUP received - nothing to do")
+
+from collections import defaultdict
+from datetime import datetime
+
+
+#########################################################################
+# Stats tracking
+#########################################################################
+
+class Stats:
+    """
+    Track stats via key and value, in a thread-safe manner, both total and since last report
+    """
+
+    def __init__(self, interval_seconds=0):
+        self._lock = threading.Lock()
+
+        self._totalStats = defaultdict(int)
+        self._recentStats = defaultdict(int)
+
+        self._totalDateTime = datetime.now()
+        self._recentDateTime = self._totalDateTime
+
+    def increment(self, metric_name, value=1):
+        """Thread-safe increment of a counter."""
+        with self._lock:
+            self._recentStats[metric_name] += value
+            self._totalStats[metric_name] += value
+
+    def set(self, metric_name, value=0):
+        """Thread-safe update of a specific value."""
+        with self._lock:
+            self._recentStats[metric_name] = value
+            self._totalStats[metric_name] = value
+
+    def pptd(td: timedelta) -> str:
+        """Pretty print a timedelta in a compact day hours minutes seconds format"""
+
+        # Extract days
+        days = td.days
+
+        # Extract hours, minutes, and seconds from total seconds
+        total_seconds = int(td.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        # Adjust hours if you want them wrapped per day (0-23)
+        hours_per_day = hours % 24
+
+        dstr = ""
+
+        if days != 0:
+            dstr = f"{days}d{hours_per_day:d}h{minutes:02d}m{seconds:02d}s"
+        elif hours_per_day != 0:
+            dstr = f"{hours_per_day:d}h{minutes:02d}m{seconds:02d}s"
+        elif minutes != 0:
+            dstr = f"{minutes:d}m{seconds:02d}s"
+        else:
+            dstr = f"{seconds:d}s"
+
+        return dstr
+
+    def report(self):
+        """Logs the total and recent stats and resets the recent stats"""
+        with self._lock:
+            # Create a shallow copy to log without holding the lock too long
+            recentStatsSnapshot = self._recentStats.copy()
+            totalStatsSnapshot = self._totalStats.copy()
+            # calculate time diffs
+            nowDateTime = datetime.now()
+            recentTimeDiff = nowDateTime - self._recentDateTime
+            totalTimeDiff = nowDateTime - self._totalDateTime
+            # clear recent stats
+            self._recentStats.clear()
+            self._recentDateTime = nowDateTime
+
+        logger.info(f"Total stats last {Stats.pptd(totalTimeDiff)}: {json.dumps(totalStatsSnapshot, sort_keys=True)}")
+        logger.info(f"Recent stats last {Stats.pptd(recentTimeDiff)}: {json.dumps(recentStatsSnapshot, sort_keys=True)}")
 
 
 #########################################################################
@@ -72,6 +153,19 @@ class GpsdGateway:
         """The queue that all fully-valid-for-sending gpsd readings are enqueued to for sampling (only send 1 every X seconds)"""
         self._sendQueue: queue.Queue = queue.Queue()
         """The queue containing gpslogger payloads to send"""
+        self._stats = Stats()
+        """Stats: stats for this gateway"""
+
+
+    #########################################################################
+    # Misc
+    #########################################################################
+
+    def checkStatsReport(self, interval: int = 0) -> None:
+        """Report stats if interval != 0"""
+        if (interval != 0):
+            self._stats.report()
+
 
     #########################################################################
     # Data processing
@@ -166,10 +260,12 @@ class GpsdGateway:
             bool: should payload be queued for sending to gpslogger endpoint
         """
         if GpsdGateway.isDataComplete(payload) == False:
+            self._stats.increment("payloadsIncomplete")
             return False
 
         if (self._lastTimestamp == int(payload['tst'])):
             logger.debug(f"Skipped enqueing payload with repeat timestamp {self._lastTimestamp}")
+            self._stats.increment("payloadsRepeated")
             return False
         return True
 
@@ -183,6 +279,7 @@ class GpsdGateway:
         """
         logger.debug(f"Enqued payload {payload}")
         self._samplingQueue.put(payload)
+        self._stats.increment("payloadsEnqueued")
 
 
     def sendData(self, id: int, url: string, headers: HeaderDict, payload: PayloadDict) -> bool:
@@ -218,6 +315,20 @@ class GpsdGateway:
     # Thread entry methods
     #########################################################################
 
+    def stats(self, id: int, stop_event: threading.Event, interval: int) -> None:
+        logger.debug(f"Stats {id} starting")
+
+        # even if interval is 0 to disable stats, go ahead and keep thread around (future reconfig on sighup)
+        sleepinterval = interval if interval != 0 else None
+
+        while not stop_event.is_set():
+            interrupted = stop_event.wait(timeout=sleepinterval) 
+            if (not interrupted):
+                self.checkStatsReport(interval)
+
+        logger.debug(f"Stats {id} ending")
+
+
     def reader(self, id: int, stop_event: threading.Event, server: string, port: int) -> None:
         """
         Thread of id to continuously read data from gpsd on server:port and enqueue any valid payloads for sampling
@@ -237,10 +348,12 @@ class GpsdGateway:
                 logger.info(f"Connecting to gpsd at tcp://{server}:{port}")
                 session = gps.gps(host=server, port=port, mode=gps.WATCH_ENABLE) # TODO mode=gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE
                 logger.info(f"Connected to gpsd at: tcp://{server}:{port}")
+                self._stats.increment("gpsdConnects")
 
                 while (not stop_event.is_set()) and (0 == session.read()):
                     if not (gps.MODE_SET & session.valid):
                         # not useful, probably not a TPV message
+                        self._stats.increment("gpsdMessagesNA")
                         continue
    
                     payload = GpsdGateway.processData(session)
@@ -251,9 +364,11 @@ class GpsdGateway:
             # These exceptions just cause a reconnection attempt
             except ConnectionRefusedError as e:
                 logger.error(f"Could not connect to gpsd at {server}:{port}: {e}")
+                self._stats.increment("gpsdConnectFailed")
                 stop_event.wait(timeout=1) 
             except Exception as e:
                 logger.error(f"Unknown error: {e}")
+                self._stats.increment("gpsdOtherErrors")
                 stop_event.wait(timeout=1) 
 
         if session is not None: session.close()
@@ -271,26 +386,30 @@ class GpsdGateway:
         """
         logger.debug(f"Sampler {id} starting")
 
-        latest = None
-
         while not stop_event.is_set():
+            latest = None
             count = 0
+
             while not stop_event.is_set():
                 try:
                     latest = self._samplingQueue.get_nowait()
                     if latest is not None: count += 1
+                    # interval of 0 means send every enqueued payload, so skip taking more than 1 payload from queue
+                    if interval == 0: break
                 except queue.Empty:
                     break
 
             # if the queue is empty, then block for first entry to avoid adding latency (and either just started or already waited min time between sends)
-            if latest == None:
+            if latest is None:
                 logger.debug(f"Sampler {id} Queue empty so do blocking get (count {count})")
                 latest = self._samplingQueue.get(block=True)
                 if latest is not None: count += 1
 
             if latest is not None:
-                logger.debug(f"Sampler {id} Sampled 1 of {count} and queued to send, and sleeping for {interval}")
                 self._sendQueue.put(latest)
+                logger.debug(f"Sampler {id} Sampled 1 of {count} and queued to send, and sleeping for {interval}")
+                self._stats.increment("samplerCount")
+                self._stats.increment("samplerEvaled", count)
                 stop_event.wait(timeout=interval) 
             else:
                 logger.debug(f"Sampler {id} Queue empty after blocking get (count {count})")
@@ -323,12 +442,15 @@ class GpsdGateway:
                 queueSize = self._sendQueue.qsize()
                 logger.debug(f"Writer {id} Sending payload (of {queueSize} @ {int_timestamp}): {latest})")
                 if not self.sendData(id, url, headers, latest):
+                    self._stats.increment("sendsFailed")
                     logger.error(f"Writer {id} Failed sending payload, re-enqueing @ {int_timestamp}: {latest})")
                     # pause for a bit?
                     stop_event.wait(timeout=1) 
                     # if sending fails, toss it back on queue for later attempt?
                     # TODO: stop queue from eating all memory if endpoint down for a long time
                     self._sendQueue.put(latest)
+                else:
+                    self._stats.increment("sendsSuccess")
         
         logger.debug(f"Writer {id} ending")
 
@@ -337,7 +459,7 @@ class GpsdGateway:
     # Main loop
     #########################################################################
 
-    def run(self, server: str, port: int, url: str, token: str, interval: int, numwriters: int) -> None:
+    def run(self, server: str, port: int, url: str, token: str, interval: int, numwriters: int, statsinterval: int) -> None:
         """
         Run the gpsd-to-gpslogger-endpoint gateway
 
@@ -350,6 +472,7 @@ class GpsdGateway:
             token (string): X-API-TOKEN for auth when POSTing to gpslogger endpoint URL
             interval (int): seconds between sampling 1 payload from the samplingQueue
             numwriters (int): number of writer threads to gpslogger endpoing to start
+            statsinterval (int): number of seconds between stats reports, or 0 for none
         """
         logger.info(f"Starting gpsd-to-gpslogger endpoint gateway...")
         logger.info(f"Targeting gpslogger endpoint URL: {url}")
@@ -367,6 +490,11 @@ class GpsdGateway:
         threads = []
 
         try:
+            # Create stats thread
+            t = threading.Thread(target=self.stats, args=(0, stop_event, statsinterval))
+            statsThread = t
+            threads.append(t)
+
             # Create reader thread
             t = threading.Thread(target=self.reader, args=(0, stop_event, server, port))
             readerThread = t
@@ -400,15 +528,19 @@ class GpsdGateway:
         except Exception as e:
             logger.error(f"Unknown error: {e}")
         finally:
-           logger.info(f"Signaling threads to stop and waiting...")
-           # Signal all threads to drop out of their loops
-           stop_event.set()
+            logger.info(f"Signaling threads to stop and waiting...")
 
-           # wait for all threads to join
-           for t in threads: t.join()
+            # Signal all threads to drop out of their loops
+            stop_event.set()
 
-           logger.info(f"Done")
+            # wait for main threads to join, but keep stats thread running
+            for t in threads: t.join()
 
+            # output one last stats report
+            self.checkStatsReport(statsinterval)
+ 
+            logger.info(f"Done")
+ 
 
 #########################################################################
 # Argument parsing
@@ -427,12 +559,13 @@ def parse_arguments() -> configargparse.Namespace:
     )
     parser.add_argument('-c', '--config', is_config_file=True, help='Path to config file')
     parser.add_argument('-s', '--server', default="localhost", help="hostname or IP address of the gpsd daemon (default: localhost).")
-    parser.add_argument('-p', '--port', default="2947", help="port number of the gpsd daemon (default: 2947).")
+    parser.add_argument('-p', '--port', type=int, default=2947, help="port number of the gpsd daemon (default: 2947).")
     parser.add_argument('-u', '--url', required=True, help="GPSLogger endpoint URL (e.g., https://example.com).")
     parser.add_argument('-t', '--token', required=True, help="GPSLogger authorization token passed in the X-API-TOKEN header.")
-    parser.add_argument('-i', '--interval', type=int, default=15, help="Interval time in seconds between endpoint updates (default: 15).")
+    parser.add_argument('-i', '--interval', type=int, default=15, help="Interval time in seconds between endpoint updates, 0 sends every payload (default: 15).")
     parser.add_argument('-w', '--numwriters', type=int, default=1, help="Number of writer threads to send to payloads to endpoint (default: 1)")
     parser.add_argument('-l', '--loglevel', default='WARNING', type=str.upper, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level (default: WARNING)')
+    parser.add_argument('-r', '--statsinterval', type=int, default=0, help="Interval time in seconds between stats reports to INFO log, 0 disables (default: 0).")
     return parser.parse_args()
 
 
@@ -460,7 +593,8 @@ def main():
         url=args.url,
         token=args.token,
         interval=args.interval,
-        numwriters=args.numwriters
+        numwriters=args.numwriters,
+        statsinterval=args.statsinterval
     )
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ Related programs:
     * Reitti is a comprehensive personal location tracking and analysis application that helps you understand your movement patterns and significant places. The name "Reitti" comes from Finnish, meaning "route" or "path".
 
 Possible improvements:
-* Track stats, with configurable periodic logging
 * Optional "Significant change" support, only updating if position or velocity changes significantly (or perhaps a scalable update rate)
 * Make the gpslogger payload configurable, perhaps borrowing the same customizable format gpslogger uses
 * Send batches of downsampled data (example: one batch of 60 TPV messages, each point 15 seconds apart) for greater mapping/tracking service efficiency
