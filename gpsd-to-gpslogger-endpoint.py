@@ -406,8 +406,14 @@ class GpsdGateway:
             # if the queue is empty, then block for first entry to avoid adding latency (and either just started or already waited min time between sends)
             if latest is None:
                 logger.debug(f"Sampler {id} Queue empty so do blocking get (count {count})")
-                latest = self._samplingQueue.get(block=True)
-                if latest is not None: count += 1
+                while not stop_event.is_set():
+                    try:
+                        latest = self._samplingQueue.get(block=True, timeout=1)
+                        if latest is not None:
+                            count += 1
+                            break
+                    except queue.Empty:
+                        pass
 
             if latest is not None:
                 self._sendQueue.put(latest)
