@@ -2,7 +2,7 @@ FROM alpine:latest
 
 LABEL org.opencontainers.image.title="gpsd to gpslogger endpoint gateway" \
       org.opencontainers.image.description="Configurable gateway to send gpsd TPV (Time Position Velocity) data to a GPSLogger-compatible endpoint" \
-      org.opencontainers.image.version="1.0" \
+      org.opencontainers.image.version="1.1.0" \
       org.opencontainers.image.source="https://github.com/Stormwind99/gpsd-to-gpslogger-endpoint" \
       org.opencontainers.image.licenses="GPL-3.0-only"
 
