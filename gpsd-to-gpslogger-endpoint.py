@@ -104,11 +104,11 @@ class Stats:
         dstr = ""
 
         if days != 0:
-            dstr = f"{days}d{hours_per_day:d}h{minutes:02d}m{seconds:02d}s"
+            dstr = f"{days}d{hours_per_day:d}h{minutes:d}m{seconds:d}s"
         elif hours_per_day != 0:
-            dstr = f"{hours_per_day:d}h{minutes:02d}m{seconds:02d}s"
+            dstr = f"{hours_per_day:d}h{minutes:d}m{seconds:d}s"
         elif minutes != 0:
-            dstr = f"{minutes:d}m{seconds:02d}s"
+            dstr = f"{minutes:d}m{seconds:d}s"
         else:
             dstr = f"{seconds:d}s"
 
