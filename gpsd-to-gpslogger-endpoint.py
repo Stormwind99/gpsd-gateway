@@ -27,6 +27,15 @@ import math
 import json
 from datetime import datetime
 
+#########################################################################
+# Version check
+#########################################################################
+
+# verify code is running under at least min supported Python version
+MIN_PYTHON = (3, 12)
+if sys.version_info < MIN_PYTHON:
+    sys.exit("Python %s.%s or later is required.\n" % MIN_PYTHON)
+
 
 #########################################################################
 # Misc
