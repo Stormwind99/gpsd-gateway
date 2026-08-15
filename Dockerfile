@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.title="gpsd to gpslogger endpoint gateway" \
 # Removed org.opencontainers.image.version="1.1.0" expecting Github action to add it automatically
 
 # Install python requirements
-RUN apk add --no-cache python3 py3-gpsd py3-requests py3-configargparse
+RUN apk add --no-cache python3 py3-gpsd py3-requests py3-configargparse py3-gpxpy
 
 # Create a non-root group and user to run as
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
