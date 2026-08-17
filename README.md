@@ -20,9 +20,9 @@ Features:
 
 ### Main scenario
 
-* GPS receiver (standalone or embedded in a device like a Peplink router) connected to gpsd on a SBC
-* A mapping/tracking service (like Reitti) which supports GPSLogger but not gpsd running on the SBC
-* This gateway running on the SBC to automatically get live GPS data from gpsd into the mapping/tracking app that supports GPSLogger endpoings
+* A GPS receiver (standalone or embedded in a device like a Peplink router) connected to gpsd on a SBC
+* A mapping/tracking service (like Reitti) which supports a GPSLogger endpoint (but not gpsd) running on the SBC
+* gpsd-gateway running on the SBC to automatically get live GPS data from gpsd into the mapping/tracking app that supports GPSLogger endpoings
 
 ## Related programs
 
@@ -35,9 +35,9 @@ Features:
 
 ## Possible improvements
 
-* Make the GPSLogger payload configurable, perhaps borrowing the same customizable format GPSLogger uses
-* Support different upload types that GPSLogger supports, not just the Custom URL endpoint and HTTP File Uploader endpoint
+* Make the GPSLogger payload configurable, perhaps borrowing the same customizable format GPSLogger and OwnTracks uses
+* Support more upload types that GPSLogger supports, not just the Custom URL endpoint and HTTP File Upload endpoint
 * Limit queue sizes as to not use all memory if GPSLogger endpoint is down for a long time
 * Optional "Significant change" support, only updating if position or velocity changes significantly (or perhaps a scalable update rate)
 * Add support for other TPV sources, such as Starlink Precise location data via gRPC - now available only for high-tier Priority accounts (including Priority Local, Priority, and Global Priority)
-* Replace this Python gateway by refactoring GPSLogger Android app into seperate GUI and backend service code, make the service run under non-Android Linux, and add location source support for gpsd under Linux in addition to the Android Framework Location API (GPSLogger dropped support for the Google Play Services Location API), thereby making GPSLogger its gpsd gateway
+* Replace this Python gateway by refactoring GPSLogger Android app into seperate GUI and backend service code, make the service run under non-Android Linux, and add location source support for gpsd under Linux in addition to the Android Framework Location API (GPSLogger dropped support for the Google Play Services Location API), thereby making GPSLogger its own gpsd gateway
