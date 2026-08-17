@@ -1,6 +1,6 @@
-# gpsd to gpslogger endpoint gateway
+# gpsd gateway
         
-Configurable gateway to send gpsd TPV (Time Position Velocity) data to different endpoints ( a GPSLogger-compatible endpoint, or a GPX uploader endpoint)
+Configurable gateway to send gpsd TPV (Time Position Velocity) data to different endpoints (a GPSLogger-compatible endpoint or a GPX uploader endpoint so far)
 
 ## Project Links
 
