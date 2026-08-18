@@ -635,8 +635,14 @@ class GpsdGateway:
                         longitude=latest.longitude,
                         elevation=latest.elevation,
                         speed=latest.velocity,
-                        time=latest.time
+                        time=latest.time,
+                        horizontal_dilution=latest.hdop,
+                        vertical_dilution=latest.vdop,
+                        position_dilution=latest.pdop
                         )
+                    # GPX 1.0 fields?
+                    point.course=latest.direction
+                    point.type_of_gps_fix = latest.type_of_gps_fix
 
                     track_points.append(point)
                 except queue.Empty:
