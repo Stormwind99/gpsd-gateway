@@ -28,10 +28,10 @@ Features:
 
 * Print the help for all command line options (and config file options)
    * ```python3 ./gpsd-gateway.py  --help```
-* Connect gpsd running on gpsdhost.internal port 2947 to Reitti's gpslogger endpoint (emulating GPSLogger's Custom URL sender) with security token REITTI_DEVICE_API_TOKEN using default options (send one point each 15 seconds)
-   * ```python3 gpsd-gateway.py -s gpsdhost.internal -p 2947 -u http://reittihost.internal:8080/api/v1/ingest/gpslogger -t REITTI_DEVICE_API_TOKEN```
-* Batching: Connect gpsd running on gpsdhost.internal port 2947 to Reitti's gpx import endpoint (emulating GPSLogger's HTTP File Upload sender) with security token REITTI_DEVICE_API_TOKEN sampling one point each 5 seconds and sending one batch of points every 60 seconds
-   * ```python3 gpsd-gateway.py -s gpsdhost.internal -p 2947 -u http://reittihost.internal:8080/api/v1/gpx/import -t REITTI_DEVICE_API_TOKEN -i 5 -b 60```
+* Connect gpsd running on gpsdhost.internal port 2947 to Reitti's gpslogger endpoint (emulating GPSLogger's Custom URL sender) with security token API_TOKEN using default options (send one point each 15 seconds)
+   * ```python3 gpsd-gateway.py -s gpsdhost.internal -p 2947 -u http://reittihost.internal:8080/api/v1/ingest/gpslogger -t API_TOKEN```
+* Batching: Connect gpsd running on gpsdhost.internal port 2947 to Reitti's gpx import endpoint (emulating GPSLogger's HTTP File Upload sender) with security token API_TOKEN sampling one point each 5 seconds and sending one batch of points every 60 seconds
+   * ```python3 gpsd-gateway.py -s gpsdhost.internal -p 2947 -u http://reittihost.internal:8080/api/v1/gpx/import -t API_TOKEN -i 5 -b 60```
 
 ## Other software
 
@@ -51,7 +51,6 @@ Features:
 
 ## Possible improvements
 
-* Make the GPSLogger payload configurable, perhaps borrowing the same customizable format GPSLogger and OwnTracks uses
 * Support more upload types that GPSLogger supports, not just the Custom URL endpoint and HTTP File Upload endpoint
 * Limit queue sizes as to not use all memory if GPSLogger endpoint is down for a long time
 * Optional "Significant change" support, only updating if position or velocity changes significantly (or perhaps a scalable update rate)

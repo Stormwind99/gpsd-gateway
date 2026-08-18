@@ -24,9 +24,11 @@ import threading
 import math
 import json
 import copy
+import re
 from datetime import datetime
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
+from collections import defaultdict
 
 # external dependencies
 import requests
@@ -68,9 +70,6 @@ def handle_sigterm(signum, frame) -> GracefulExit:
 def handle_sighup(signum, frame) -> None:
     """Handle SIGHUP: do nothing"""
     logger.info("SIGHUP received - nothing to do")
-
-from collections import defaultdict
-from datetime import datetime
 
 
 #########################################################################
@@ -149,7 +148,7 @@ class Stats:
 
 
 #########################################################################
-# GpsdGateway
+# Gateway
 #########################################################################
 
 @dataclass
@@ -179,11 +178,14 @@ class Point:
 
 class GpsdGateway:
     """
-    Gateway to read GPS data from gpsd and forward it to gpslogger style endpoint
+    Gateway to read GPS data from gpsd and forward it to an endpoint
     """
 
     # type hint shortcuts
     type HeaderDict = dict[str, str]
+
+    authHeadersShortcut = ['X-API-TOKEN', 'Authorization']
+    """HTTP headers to add as a helper if a auth token is supplied on command line"""
 
     def __init__(self):
         self._lastTimestamp: int = 0
@@ -196,6 +198,11 @@ class GpsdGateway:
         """The queue of all points waiting to be sent together in a batch, when batching is enabled"""
         self._sendQueue: queue.Queue = queue.Queue()
         """The queue containing outputs to send"""
+
+        self._pointtemplate = None # see default in command line argparse
+        """str: template used to create payload to send to point endpoint"""
+        self._pointpattern = None
+        """re.Pattern: regex pattern built from  _pointtemplate keys for substituion, cached on first evaluation"""
 
         #self.isTesting = True
         self.isTesting = False
@@ -308,8 +315,16 @@ class GpsdGateway:
         self._stats.increment("payloadsEnqueued")
 
 
-    def sendDataToGPSLoggerEndpoint(self, id: int, url: str, headers: HeaderDict, point: Point) -> bool:
-        # Build a gpslogger compatible payload for a Point
+    def buildGPSLoggerEndpointPayload(self, point: Point) -> str:
+        """
+        Build a gpslogger compatible payload for a Point
+
+        Arguments:
+            point (Point): the point to build a payload string for
+
+        Returns:
+            str: payload string representing point
+        """
 
         # gpslogger text block formatting:
         # https://github.com/mendhak/gpslogger/blob/master/gpslogger/src/main/java/com/mendhak/gpslogger/senders/customurl/CustomUrlManager.java#L176
@@ -318,18 +333,32 @@ class GpsdGateway:
         # https://github.com/mendhak/gpslogger/blob/master/gpslogger/src/main/java/com/mendhak/gpslogger/common/SerializableLocation.java#L86
         # https://github.com/mendhak/gpslogger/blob/master/gpslogger/src/main/java/com/mendhak/gpslogger/loggers/customurl/CustomUrlLogger.java#L51
 
-        payload = {
-            '_type': 'location',
-            't': 'u',
-            'batt': '100',
-            'bs': 'true',
-        }
-        if point.accuracy is not None: payload['acc'] = point.accuracy
-        if point.elevation is not None: payload['alt'] = point.elevation
-        if point.latitude is not None: payload['lat'] = point.latitude
-        if point.longitude is not None: payload['lon'] = point.longitude
-        if point.timestamp is not None: payload['tst'] = int(point.timestamp)
-        if point.velocity is not None: payload['vel'] = point.velocity
+        # fields to possibly replace in the template
+        replacements = {
+            '%LAT': str(point.latitude),
+            '%LON': str(point.longitude),
+            '%ACC': str(point.accuracy),
+            '%ALT': str(point.elevation),
+            '%TIMESTAMP': str(int(point.timestamp)),
+            '%SPD': str(point.velocity),
+            '%BATT': "100",
+            '%ISCHARGING': "true"
+            }
+
+        # compile pattern re first time only, for efficiency
+        if self._pointpattern is None:
+            # 1. Escape keys to handle special characters, then join them with an OR (|) pipe
+            # TODO assignment not thread-safe kosher if multiple writer threads are running
+            self._pointpattern = re.compile("|".join(re.escape(key) for key in replacements.keys()))
+
+        # 2. Use a lambda function to look up the matched text in your dictionary
+        payload = self._pointpattern.sub(lambda match: replacements[match.group(0)], self._pointtemplate)
+
+        return payload
+
+
+    def sendDataToGPSLoggerEndpoint(self, id: int, url: str, headers: HeaderDict, point: Point) -> bool:
+        payload = self.buildGPSLoggerEndpointPayload(point)
 
         return self.sendData(id, url, headers, payload, False)
 
@@ -389,7 +418,7 @@ class GpsdGateway:
             # send the payload as a point
             else:
                 send_headers['Content-Type'] = 'application/json'
-                response = requests.post(url,  headers=send_headers, json=payload, timeout=5)
+                response = requests.post(url,  headers=send_headers, data=payload, timeout=5)
 
             status_code = response.status_code
             response_string = response.text # in some instance response.json() might be better
@@ -398,7 +427,7 @@ class GpsdGateway:
             if status_code == 200:
                 success = True
             elif status_code in (401, 403):
-                logger.error(f"Writer {id} Authentication failed! Check your X-API-TOKEN. Status code: {status_code}")
+                logger.error(f"Writer {id} Authentication failed! Check your auth token. Status code: {status_code}")
             else:
                 logger.error(f"Writer {id} Endpoint rejected data. Status code: {status_code}")
         except requests.exceptions.RequestException as req_err:
@@ -542,8 +571,6 @@ class GpsdGateway:
             stop_event (threading.Event): use to signal thread to stop and return
             interval (int): seconds between creating a GPX xml batch of all points on the batchQueue
         """
-        logger.debug(f"Sampler {id} starting")
-        # Send a batch of points at once, at interval, in GPX format.
         logger.debug(f"BatcherGPX {id} starting")
 
         while (interval != 0) and (not stop_event.is_set()):
@@ -635,6 +662,7 @@ class GpsdGateway:
                     success = self.sendData(id, url, headers, latest, True)
                 # otherwise send a point
                 else:
+                    # TODO move encoding of points into string payload to previous step in pipeline in point mode, to mirror latest being XML string from previous step in batching mode
                     success = self.sendDataToGPSLoggerEndpoint(id, url, headers, latest)
 
                 if not success:
@@ -655,7 +683,7 @@ class GpsdGateway:
     # Main loop
     #########################################################################
 
-    def run(self, server: str, port: int, url: str, token: str, interval: int, batchinterval: int, numwriters: int, statsinterval: int) -> None:
+    def run(self, server: str, port: int, url: str, headers: HeaderDict, token:str, interval: int, batchinterval: int, numwriters: int, statsinterval: int, pointtemplate:str) -> None:
         """
         Run the gpsd-gateway
 
@@ -665,7 +693,8 @@ class GpsdGateway:
             server (str): hostname of gpsd server
             port (int): TCP port of gpsd server
             url (str): gpslogger endpoint URL to http POST payload
-            token (str): X-API-TOKEN for auth when POSTing to gpslogger endpoint URL
+            headers (HeaderDict): HTTP headers for http POST
+            token (str): Shortcut to add auth token to HTTP headers
             interval (int): seconds between sampling 1 point from the samplingQueue
             batchinterval (int): seconds between sending all points in the batchQueue, or 0 if batching is disabled
             numwriters (int): number of writer threads to gpslogger endpoing to start
@@ -674,12 +703,16 @@ class GpsdGateway:
         logger.info(f"Starting gpsd-gateway...")
         logger.info(f"Targeting endpoint URL: {url}")
 
+        # set up point template
+        self._pointtemplate = pointtemplate
+
         # Set up the authorization header
-        # TODO make the specific header configurable
-        headers = {
-            'X-API-TOKEN': token,
-            'Authorization': token
-        }
+        httpheaders = headers
+
+        # shortcut for common auth headers if auth token is set
+        if (token is not None):
+            for header in GpsdGateway.authHeadersShortcut:
+                httpheaders[header] = token
      
         # stop signal event to threads, to make KeyboardInterrupt and graceful SIGKILL work
         stop_event = threading.Event()
@@ -749,6 +782,18 @@ class GpsdGateway:
 # Argument parsing
 #########################################################################
 
+class DictAction(configargparse.Action):
+    """
+    Custom argparse action to read key=value pairs into a dictionary
+    """
+    def __call__(self, parser, namespace, values, option_string=None):
+        out_dict = {}
+        for val in values:
+            k, _, v = val.partition('=')
+            out_dict[k] = v
+        setattr(namespace, self.dest, out_dict)
+
+
 def parse_arguments() -> configargparse.Namespace:
     """
     Parse arguments
@@ -758,18 +803,21 @@ def parse_arguments() -> configargparse.Namespace:
     """
 
     parser = configargparse.ArgumentParser(
-        description="Configurable gateway to forward gpsd data to a GPSLogger-compatible endpoint"
+        description="Configurable gateway to send gpsd TPV (Time Position Velocity) data to different endpoints",
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument('-c', '--config', is_config_file=True, help='Path to config file')
-    parser.add_argument('-s', '--server', default="localhost", help="hostname or IP address of the gpsd daemon (default: localhost)")
-    parser.add_argument('-p', '--port', type=int, default=2947, help="port number of the gpsd daemon (default: 2947)")
-    parser.add_argument('-u', '--url', required=True, help="GPSLogger endpoint URL (e.g., https://example.com)")
-    parser.add_argument('-t', '--token', required=True, help="GPSLogger authorization token passed in the http header")
-    parser.add_argument('-i', '--interval', type=int, default=15, help="Time in seconds between sampling a point, 0 sends every point (default: 15)")
-    parser.add_argument('-b', '--batchinterval', type=int, default=0, help="Time in seconds between sending point sample batches, 0 disables (default: 0)")
-    parser.add_argument('-w', '--numwriters', type=int, default=1, help="Number of writer threads to send to payloads to endpoint (default: 1)")
-    parser.add_argument('-l', '--loglevel', default='WARNING', type=str.upper, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level (default: WARNING)')
-    parser.add_argument('-r', '--statsinterval', type=int, default=0, help="Interval time in seconds between stats reports to INFO log, 0 disables, SIGHUP forces report (default: 0)")
+    parser.add_argument('-s', '--server', default="localhost", help="hostname or IP address of the gpsd daemon")
+    parser.add_argument('-p', '--port', type=int, default=2947, help="port number of the gpsd daemon")
+    parser.add_argument('-u', '--url', default="http://localhost:8080/api/v1/ingest/gpslogger", help="Endpoint URL")
+    parser.add_argument('-x', '--header', nargs='*', action=DictAction, default={}, help="Add HTTP header X=Y")
+    parser.add_argument('-t', '--token', help="Authorization token passed in the HTTP header (will be automatically added to headers as A-API-TOKEN and Authorization")
+    parser.add_argument('-i', '--interval', type=int, default=15, help="Time in seconds between sampling a point, 0 sends every point")
+    parser.add_argument('-b', '--batchinterval', type=int, default=0, help="Time in seconds between sending point sample batches, 0 disables")
+    parser.add_argument('-w', '--numwriters', type=int, default=1, help="Number of writer threads to send to payloads to endpoint")
+    parser.add_argument('-l', '--loglevel', default='WARNING', type=str.upper, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Set the logging level')
+    parser.add_argument('-r', '--statsinterval', type=int, default=0, help="Interval time in seconds between stats reports to INFO log, 0 disables, SIGHUP forces report")
+    parser.add_argument('-e', '--pointtemplate', type=str, default='''{"_type": "location", "t": "u", "batt": "%BATT", "bs": "%ISCHARGING", "acc": %ACC, "alt": %ALT, "lat": %LAT, "lon": %LON, "tst": %TIMESTAMP, "vel": %SPD}''', help="GPSLogger compatible template used for sending points in point mode")
     return parser.parse_args()
 
 
@@ -797,11 +845,13 @@ def main():
         server=args.server,
         port=args.port,
         url=args.url,
+        headers=args.header,
         token=args.token,
         interval=args.interval,
         batchinterval=args.batchinterval,
         numwriters=args.numwriters,
-        statsinterval=args.statsinterval
+        statsinterval=args.statsinterval,
+        pointtemplate=args.pointtemplate
     )
 
 if __name__ == "__main__":
