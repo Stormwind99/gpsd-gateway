@@ -163,8 +163,15 @@ class Point:
         self.timestamp = None
         self.accuracy = None
         self.velocity = None
-        # TODO self.type
-        # TODO GPXWaypoint 'type', 'type_of_gpx_fix'
+
+        self.hdop = None
+        self.vdop = None
+        self.pdop = None
+        self.timestring = None
+        self.satellites = None
+        self.filename = None
+        self.direction = None
+        self.type_of_gps_fix = None
 
     def isGoodEnough(self) -> bool:
         """
@@ -267,6 +274,7 @@ class GpsdGateway:
             # Format: "2026-08-05T20:08:00.000Z"
             clean_time = session.fix.time.replace('Z', '+00:00')
             point.time = datetime.fromisoformat(clean_time)
+            point.timestring=session.fix.time
 
             timeStamp = gps.isotime(session.fix.time)
             point.timestamp = int(timeStamp)
@@ -275,6 +283,15 @@ class GpsdGateway:
         # Get speed
         if gps.isfinite(session.fix.speed):
             point.velocity = session.fix.speed # maybe * 3.6, # Convert m/s to km/h
+
+        # TODO validate
+        point.direction = session.fix.track
+        point.hdop = session.hdop
+        point.vdop = session.vdop
+        point.pdop = session.pdop
+        point.satellites = len(session.satellites)
+        point.filename = session.input_file_name
+        point.type_of_gps_fix = (None, "none", "2d", "3d")[session.fix.mode]
       
         logString  += ' END'
         logger.debug(logString)
@@ -325,6 +342,8 @@ class GpsdGateway:
         Returns:
             str: payload string representing point
         """
+        # TODO support replacements in URL in addition to payload
+        # see https://github.com/mendhak/gpslogger/blob/master/assets/text/faq/faq16-custom-url.md
 
         # gpslogger text block formatting:
         # https://github.com/mendhak/gpslogger/blob/master/gpslogger/src/main/java/com/mendhak/gpslogger/senders/customurl/CustomUrlManager.java#L176
@@ -339,11 +358,36 @@ class GpsdGateway:
             '%LON': str(point.longitude),
             '%ACC': str(point.accuracy),
             '%ALT': str(point.elevation),
+            '%DIR': str(point.direction),
             '%TIMESTAMP': str(int(point.timestamp)),
-            '%SPD': str(point.velocity),
+            '%TIME': point.timestring,
+            '%SPD': str(point.velocity), # m/s
+            '%SPD_KPH': str(point.velocity * 3.6), # convert m/s to k/h
             '%BATT': "100",
-            '%ISCHARGING': "true"
+            '%ISCHARGING': "true",
+            '%HDOP': str(point.hdop),
+            '%VDOP': str(point.vdop),
+            '%PDOP': str(point.pdop),
+            '%SAT': str(point.satellites),
+            '%FILENAME': str(point.filename)
             }
+
+        # TODO if possible
+        # see https://github.com/mendhak/gpslogger/blob/master/gpslogger/src/main/java/com/mendhak/gpslogger/senders/customurl/CustomUrlManager.java#L191-L236
+        # 't': "u" or "p"?
+        # %DESC annotation
+        # %PROV provider
+        # %TIMEOFFSET time offset
+        # %DATE date
+        # %STARTTIMESTAMP epoch
+        # %AID Android id
+        # %SER serial
+        # %PROFILE profile
+        # %DIST travelled
+        # %ALL all parameters
+
+        # a few more possiblities from OwnTrack
+        # see https://owntracks.org/booklet/tech/json/
 
         # compile pattern re first time only, for efficiency
         if self._pointpattern is None:
@@ -499,6 +543,7 @@ class GpsdGateway:
                 logger.error(f"Could not connect to gpsd at {server}:{port}: {e}")
                 self._stats.increment("gpsdConnectFailed")
                 stop_event.wait(timeout=1) 
+            # NOTE comment out to get better stacktrack
             except Exception as e:
                 logger.error(f"Unknown error: {e}")
                 self._stats.increment("gpsdOtherErrors")
@@ -590,19 +635,22 @@ class GpsdGateway:
                         longitude=latest.longitude,
                         elevation=latest.elevation,
                         speed=latest.velocity,
-                        time=latest.time)
+                        time=latest.time
+                        )
+
                     track_points.append(point)
                 except queue.Empty:
                     break
 
             numPoints = len(track_points)
-            self._stats.increment("batcherPoints", numPoints)
-
-            logger.debug(f"BatcherGPX {id} GPX encoding batch of {numPoints}")
 
             # might get an empty array on shutdown, so skip if so
-            if not track_points:
+            if numPoints <= 0:
+                logger.debug(f"BatcherGPX {id} {numPoints} to batch so skipping")
                 continue
+
+            self._stats.increment("batcherPoints", numPoints)
+            logger.debug(f"BatcherGPX {id} GPX encoding batch of {numPoints}")
            
             # see https://pypi.org/project/gpxpy/ for gpx generation docs
             gpx = gpxpy.gpx.GPX()
@@ -761,6 +809,7 @@ class GpsdGateway:
             logger.info(f"Shutting down due to Control-C {e}")
         except GracefulExit as e:
             logger.info(f"Shutting down due to kill signal: {e}")
+        # NOTE comment out to get better stacktrack
         except Exception as e:
             logger.error(f"Unknown error: {e}")
         finally:
