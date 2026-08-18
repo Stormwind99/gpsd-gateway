@@ -29,6 +29,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 from collections import defaultdict
+from urllib.parse import urlparse
 
 # external dependencies
 import requests
@@ -506,17 +507,27 @@ class GpsdGateway:
         logger.debug(f"Stats {id} ending")
 
 
-    def reader(self, id: int, stop_event: threading.Event, server: str, port: int) -> None:
+    def reader(self, id: int, stop_event: threading.Event, url: str) -> None:
         """
         Thread of id to continuously read data from gpsd on server:port and enqueue any valid points for sampling
 
         Arguments:
             id (int): thread id number
             stop_event (threading.Event): use to signal thread to stop and return
-            server (str): hostname of gpsd server
-            port (int): TCP port of gpsd server
+            url (str): server to connect to
         """
-        logger.debug(f"Reader {id} starting for {server}:{port}")
+        logger.debug(f"Reader {id} starting for {url}")
+
+        # parse url
+        parsed = urlparse(url)
+        scheme = parsed.scheme
+        server = parsed.hostname
+        # use default port if not specified
+        port = parsed.port or 2947
+
+        if scheme != "gpsd":
+            raise ValueError(f"Unknown or unsupported URL scheme: '{scheme}'")
+            return
 
         while not stop_event.is_set():
             session = None
@@ -737,15 +748,14 @@ class GpsdGateway:
     # Main loop
     #########################################################################
 
-    def run(self, server: str, port: int, url: str, headers: HeaderDict, token:str, interval: int, batchinterval: int, numwriters: int, statsinterval: int, pointtemplate:str) -> None:
+    def run(self, sourceurl: str, url: str, headers: HeaderDict, token:str, interval: int, batchinterval: int, numwriters: int, statsinterval: int, pointtemplate:str) -> None:
         """
         Run the gpsd-gateway
 
         Runs until unrecoverable error, KeyboardInterrupt, or kill signal
 
         Arguments:
-            server (str): hostname of gpsd server
-            port (int): TCP port of gpsd server
+            sourceurl (str): hostname and port of gpsd server
             url (str): gpslogger endpoint URL to http POST payload
             headers (HeaderDict): HTTP headers for http POST
             token (str): Shortcut to add auth token to HTTP headers
@@ -757,6 +767,8 @@ class GpsdGateway:
         logger.info(f"Starting gpsd-gateway...")
         logger.info(f"Targeting endpoint URL: {url}")
 
+        ## Setup
+
         # set up point template
         self._pointtemplate = pointtemplate
 
@@ -767,6 +779,8 @@ class GpsdGateway:
         if (token is not None):
             for header in GpsdGateway.authHeadersShortcut:
                 httpheaders[header] = token
+
+        ## Threads
      
         # stop signal event to threads, to make KeyboardInterrupt and graceful SIGKILL work
         stop_event = threading.Event()
@@ -781,7 +795,7 @@ class GpsdGateway:
             threads.append(t)
 
             # Create reader thread
-            t = threading.Thread(target=self.reader, args=(0, stop_event, server, port))
+            t = threading.Thread(target=self.reader, args=(0, stop_event, sourceurl))
             readerThread = t
             threads.append(t)
 
@@ -862,8 +876,7 @@ def parse_arguments() -> configargparse.Namespace:
         formatter_class=configargparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument('-c', '--config', is_config_file=True, help='Path to config file')
-    parser.add_argument('-s', '--server', default="localhost", help="hostname or IP address of the gpsd daemon")
-    parser.add_argument('-p', '--port', type=int, default=2947, help="port number of the gpsd daemon")
+    parser.add_argument('-s', '--sourceurl', default="gpsd://localhost:2947", help="Address of gpsd daemon in gpsd:// URL format")
     parser.add_argument('-u', '--url', default="http://localhost:8080/api/v1/ingest/gpslogger", help="Endpoint URL")
     parser.add_argument('-x', '--header', nargs='*', action=DictAction, default={}, help="Add HTTP header X=Y")
     parser.add_argument('-t', '--token', help="Authorization token passed in the HTTP header (will be automatically added to headers as A-API-TOKEN and Authorization")
@@ -897,8 +910,7 @@ def main():
     # switch SIGHUP to be handled by GpsdGateway object for forced stats reporting
     signal.signal(signal.SIGHUP, app.handleSighup)
     app.run(
-        server=args.server,
-        port=args.port,
+        sourceurl=args.sourceurl,
         url=args.url,
         headers=args.header,
         token=args.token,
