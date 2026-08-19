@@ -212,8 +212,8 @@ class GpsdGateway:
         self._pointpattern = None
         """re.Pattern: regex pattern built from  _pointtemplate keys for substituion, cached on first evaluation"""
 
-        #self.isTesting = True
-        self.isTesting = False
+        self.isDryRun = False
+        """Don't write/send if doing a dry run"""
 
 
     #########################################################################
@@ -450,7 +450,7 @@ class GpsdGateway:
             response = None
 
             # make a fake response for testing
-            if (self.isTesting):
+            if (self.isDryRun):
                 response = MagicMock()
                 response.status_code = 200
                 response.ok = True
@@ -533,7 +533,7 @@ class GpsdGateway:
             session = None
 
             try:
-                logger.info(f"Connecting to gpsd at tcp://{server}:{port}")
+                logger.info(f"Connecting to gpsd at: tcp://{server}:{port}")
                 session = gps.gps(host=server, port=port, mode=gps.WATCH_ENABLE) # TODO mode=gps.WATCH_ENABLE | gps.WATCH_NEWSTYLE
                 logger.info(f"Connected to gpsd at: tcp://{server}:{port}")
                 self._stats.increment("gpsdConnects")
@@ -748,7 +748,7 @@ class GpsdGateway:
     # Main loop
     #########################################################################
 
-    def run(self, sourceurl: str, url: str, headers: HeaderDict, token:str, interval: int, batchinterval: int, numwriters: int, statsinterval: int, pointtemplate:str) -> None:
+    def run(self, sourceurl:str, url: str, headers:HeaderDict, token:str, interval:int, batchinterval:int, numwriters:int, statsinterval: int, pointtemplate:str, dryrun:bool) -> None:
         """
         Run the gpsd-gateway
 
@@ -764,15 +764,13 @@ class GpsdGateway:
             numwriters (int): number of writer threads to gpslogger endpoing to start
             statsinterval (int): number of seconds between stats reports, or 0 for none
         """
-        logger.info(f"Starting gpsd-gateway...")
         logger.info(f"Targeting endpoint URL: {url}")
 
         ## Setup
 
-        # set up point template
+        self.isDryRun = dryrun
         self._pointtemplate = pointtemplate
 
-        # Set up the authorization header
         httpheaders = headers
 
         # shortcut for common auth headers if auth token is set
@@ -876,9 +874,10 @@ def parse_arguments() -> configargparse.Namespace:
         formatter_class=configargparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument('-c', '--config', is_config_file=True, help='Path to config file')
+    parser.add_argument('-n', '--dryrun', default=False, action='store_true', help='Perform a dry run with no data sent to endpoint')
     parser.add_argument('-s', '--sourceurl', default="gpsd://localhost:2947", help="Address of gpsd daemon in gpsd:// URL format")
     parser.add_argument('-u', '--url', default="http://localhost:8080/api/v1/ingest/gpslogger", help="Endpoint URL")
-    parser.add_argument('-x', '--header', nargs='*', action=DictAction, default={}, help="Add HTTP header X=Y")
+    parser.add_argument('-x', '--header', nargs='*', action=DictAction, default={}, help="Add HTTP header X=Y or {X=Y,A=B}")
     parser.add_argument('-t', '--token', help="Authorization token passed in the HTTP header (will be automatically added to headers as A-API-TOKEN and Authorization")
     parser.add_argument('-i', '--interval', type=int, default=15, help="Time in seconds between sampling a point, 0 sends every point")
     parser.add_argument('-b', '--batchinterval', type=int, default=0, help="Time in seconds between sending point sample batches, 0 disables")
@@ -887,6 +886,20 @@ def parse_arguments() -> configargparse.Namespace:
     parser.add_argument('-r', '--statsinterval', type=int, default=0, help="Interval time in seconds between stats reports to INFO log, 0 disables, SIGHUP forces report")
     parser.add_argument('-e', '--pointtemplate', type=str, default='''{"_type": "location", "t": "u", "batt": "%BATT", "bs": "%ISCHARGING", "acc": %ACC, "alt": %ALT, "lat": %LAT, "lon": %LON, "tst": %TIMESTAMP, "vel": %SPD}''', help="GPSLogger compatible template used for sending points in point mode")
     return parser.parse_args()
+
+def args_get_filtered_log_string(args, filter_list):
+  """Converts argparse Namespace to a log string, masking keys in filter_list."""
+  args_dict = vars(args)
+  filtered_items = []
+
+  for key, value in args_dict.items():
+    if key in filter_list:
+      log_value = "***" if value is not None else "None"
+    else:
+      log_value = str(value)
+    filtered_items.append(f"{key}={log_value}")
+
+  return ", ".join(filtered_items)
 
 
 #########################################################################
@@ -906,6 +919,9 @@ def main():
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
+    logger.info(f"Starting gpsd-gateway...")
+    logger.info(f"Arguments: {args_get_filtered_log_string(args, ['token'])}")
+
     app = GpsdGateway()
     # switch SIGHUP to be handled by GpsdGateway object for forced stats reporting
     signal.signal(signal.SIGHUP, app.handleSighup)
@@ -918,7 +934,8 @@ def main():
         batchinterval=args.batchinterval,
         numwriters=args.numwriters,
         statsinterval=args.statsinterval,
-        pointtemplate=args.pointtemplate
+        pointtemplate=args.pointtemplate,
+        dryrun=args.dryrun
     )
 
 if __name__ == "__main__":
