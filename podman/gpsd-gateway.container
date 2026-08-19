@@ -9,8 +9,8 @@ Requires=network-online.target
 ContainerName=gpsd-gateway
 Image=ghcr.io/stormwind99/gpsd-gateway:latest
 AutoUpdate=registry
-# Replace REITTI_DEVICE_API_TOKEN
-Exec=-s host.containers.internal -p 2947 -u http://host.containers.internal:8080/api/v1/ingest/gpslogger -t REITTI_DEVICE_API_TOKEN -i 15 -l INFO
+# NOTICE: Replace API_TOKEN with your token
+Exec=-s gpsd://host.containers.internal:2947 -u http://host.containers.internal:8080/api/v1/ingest/gpslogger -t API_TOKEN -i 15 -l INFO
 
 [Service]
 Restart=on-failure
