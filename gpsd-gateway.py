@@ -907,7 +907,7 @@ def parse_arguments() -> configargparse.Namespace:
     parser.add_argument('-n', '--dryrun', default=False, action='store_true', help='Perform a dry run with no data sent to endpoint')
     parser.add_argument('-s', '--sourceurl', metavar="URL", default="gpsd://localhost:2947", help="Address of gpsd daemon in gpsd:// URL format")
     parser.add_argument('-u', '--url', default="http://localhost:8080/api/v1/ingest/gpslogger", help="Endpoint URL")
-    parser.add_argument('-x', '--header', metavar="X=Y", dest='headers', nargs='*', type=split_values, action=ParseKeyValue, default={}, help="Add HTTP header")
+    parser.add_argument('-H', '--header', metavar="X=Y", dest='headers', nargs='*', type=split_values, action=ParseKeyValue, default={}, help="Add HTTP header")
     parser.add_argument('-t', '--token', help="Authorization token passed in the HTTP header (automatically added to headers as X-API-TOKEN and Authorization")
     parser.add_argument('-i', '--interval', metavar="SECS", type=int, default=15, help="Time in seconds between sampling a point, 0 sends every point")
     parser.add_argument('-b', '--batchinterval', metavar="SECS", type=int, default=0, help="Time in seconds between sending point sample batches, 0 disables")
