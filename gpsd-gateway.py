@@ -25,6 +25,7 @@ import math
 import json
 import copy
 import re
+import shlex
 from datetime import datetime
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
@@ -849,16 +850,43 @@ class GpsdGateway:
 # Argument parsing
 #########################################################################
 
-class DictAction(configargparse.Action):
-    """
-    Custom argparse action to read key=value pairs into a dictionary
-    """
+class ParseKeyValue(configargparse.Action):
+    """Custom argparse action to read key=value pairs into a dictionary"""
     def __call__(self, parser, namespace, values, option_string=None):
-        out_dict = {}
-        for val in values:
-            k, _, v = val.partition('=')
-            out_dict[k] = v
-        setattr(namespace, self.dest, out_dict)
+        # Initialize dictionary if it doesn't exist yet
+        d = getattr(namespace, self.dest, None) or {}
+        if not isinstance(values, list):
+            values = [values]
+
+        # HACK: flatten lists because of odd configargparse behavior where configfile "X = a=1 b=1 c=1" results in value [['a=1', 'b=2', 'c=3']]
+        flat_list = [item for sublist in values for item in sublist]
+
+        # split k=v strings
+        for val in flat_list:
+            if '=' in val:
+                k, v = val.split('=', 1)
+                d[k.strip()] = v.strip()
+
+        setattr(namespace, self.dest, d)
+
+
+def split_values(value):
+    """Splits value into a list of space separated items, allowing quoted items or interior quotes"""
+    retval = None
+    if isinstance(value, list):
+        # else already a list (e.g., if using YAML parser)
+        retval = value
+    else:
+        if value.count('=') <= 1:
+            # hack for command line arguments passed as value: "Test1=AAA BBB"
+            # NOTE deal with nested equals like Test1=AAA=BBB?
+            retval = [value]
+        else:
+            # Split by spaces, allowing quoting
+            # Test1=AAA Test2="AAA BBB"
+            retval = shlex.split(value)
+
+    return retval
 
 
 def parse_arguments() -> configargparse.Namespace:
@@ -872,13 +900,15 @@ def parse_arguments() -> configargparse.Namespace:
     parser = configargparse.ArgumentParser(
         description="Configurable gateway to send gpsd TPV (Time Position Velocity) data to different endpoints",
         formatter_class=configargparse.ArgumentDefaultsHelpFormatter
+        #config_file_parser_class=configargparse.YAMLConfigFileParser
+        #config_file_parser_class=configargparse.ConfigparserConfigFileParser
     )
     parser.add_argument('-c', '--config', is_config_file=True, help='Path to config file')
     parser.add_argument('-n', '--dryrun', default=False, action='store_true', help='Perform a dry run with no data sent to endpoint')
     parser.add_argument('-s', '--sourceurl', metavar="URL", default="gpsd://localhost:2947", help="Address of gpsd daemon in gpsd:// URL format")
     parser.add_argument('-u', '--url', default="http://localhost:8080/api/v1/ingest/gpslogger", help="Endpoint URL")
-    parser.add_argument('-x', '--header', nargs='*', action=DictAction, default={}, help="Add HTTP header X=Y or {X=Y,A=B}")
-    parser.add_argument('-t', '--token', help="Authorization token passed in the HTTP header (will be automatically added to headers as A-API-TOKEN and Authorization")
+    parser.add_argument('-x', '--header', metavar="X=Y", dest='headers', nargs='*', type=split_values, action=ParseKeyValue, default={}, help="Add HTTP header")
+    parser.add_argument('-t', '--token', help="Authorization token passed in the HTTP header (automatically added to headers as X-API-TOKEN and Authorization")
     parser.add_argument('-i', '--interval', metavar="SECS", type=int, default=15, help="Time in seconds between sampling a point, 0 sends every point")
     parser.add_argument('-b', '--batchinterval', metavar="SECS", type=int, default=0, help="Time in seconds between sending point sample batches, 0 disables")
     parser.add_argument('-w', '--numwriters', metavar="NUM", type=int, default=1, help="Number of writer threads to send to payloads to endpoint")
@@ -928,7 +958,7 @@ def main():
     app.run(
         sourceurl=args.sourceurl,
         url=args.url,
-        headers=args.header,
+        headers=args.headers,
         token=args.token,
         interval=args.interval,
         batchinterval=args.batchinterval,
