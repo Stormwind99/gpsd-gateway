@@ -51,8 +51,9 @@ Features:
 
 ## Possible improvements
 
-* Support more upload types that GPSLogger supports, not just the Custom URL endpoint and HTTP File Upload endpoint
+* Add URL parameter support and replacement like GPSLogger
 * Limit queue sizes as to not use all memory if GPSLogger endpoint is down for a long time
+* Support more upload types that GPSLogger supports, not just the Custom URL endpoint and HTTP File Upload endpoint
 * Optional "Significant change" support, only updating if position or velocity changes significantly (or perhaps a scalable update rate)
 * Add support for other TPV sources, such as Starlink Precise location data via gRPC - now available only for high-tier Priority accounts (including Priority Local, Priority, and Global Priority)
 * Replace this Python gateway by refactoring GPSLogger Android app into seperate GUI and backend service code, make the service run under non-Android Linux, and add location source support for gpsd under Linux in addition to the Android Framework Location API (GPSLogger dropped support for the Google Play Services Location API), thereby making GPSLogger its own gpsd gateway
