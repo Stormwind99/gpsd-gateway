@@ -12,8 +12,8 @@ Features:
 
 ## Project Links
 
-* Source: https://github.com/Stormwind99/gpsd-gateway/
-* Container images: https://ghcr.io/stormwind99/gpsd-gateway
+* Source: <https://github.com/Stormwind99/gpsd-gateway/>
+* Container images: <https://ghcr.io/stormwind99/gpsd-gateway>
    * Latest: ghcr.io/stormwind99/gpsd-gateway:latest
 
 ## Examples
@@ -37,16 +37,16 @@ Features:
 
 ### Related software
 
-* gpsd - https://gpsd.gitlab.io/gpsd/
+* [gpsd](https://gpsd.gitlab.io/gpsd/)
     * gpsd is a service daemon that monitors one or more GPSes or AIS receivers attached to a host computer through serial or USB ports, making all data on the location/course/velocity of the sensors available to be queried on TCP port 2947 of the host computer.
-* Reitti - https://github.com/dedicatedcode/reitti or https://www.dedicatedcode.com/projects/reitti/latest/
+* [Reitti](https://github.com/dedicatedcode/reitti) - [alt](https://www.dedicatedcode.com/projects/reitti/latest/)
     * Reitti is a comprehensive personal location tracking and analysis application that helps you understand your movement patterns and significant places. The name "Reitti" comes from Finnish, meaning "route" or "path".
-* GPSLogger - https://github.com/mendhak/gpslogger
+* [GPSLogger](https://github.com/mendhak/gpslogger)
     * GPSLogger is an Android app that logs GPS information to various formats (GPX, KML, CSV, NMEA, Custom URL) and has options for uploading (SFTP, OpenStreetMap, Google Drive, Dropbox, Email). 
 
 ### Similar software
 
-* owntracks-cli-publisher - https://github.com/owntracks/ocli
+* [owntracks-cli-publisher](https://github.com/owntracks/ocli)
     * OwnTracks command line interface publisher, a.k.a. owntracks-cli-publisher, is a small utility which connects to gpsd and publishes position information in OwnTracks JSON to an MQTT broker in order for compatible software to process location data.
 
 ## Possible improvements
